@@ -6,6 +6,7 @@ package tracestore
 import (
 	"strings"
 
+	expression "github.com/jaegertracing/jaeger-idl/query/expression/v1"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/clickhouse/tracestore/dbmodel"
 )
 
@@ -23,6 +24,17 @@ type AttributeLayout interface {
 	// attribute groups of the events or of the links. A group there is one column in every
 	// layout, and its value holds the attributes of every item.
 	appendItemAttributes(values []any, attributes dbmodel.Attributes2D) []any
+	// Keys returns the expression for the keys of a group of the span row, and values the
+	// expression for its values, in the same order.
+	Keys(group string) string
+	values(group string) string
+	// ItemKeys returns the expression for the keys of a group of the events or of the links,
+	// which is one array of keys per item, and itemValues the expression for its values.
+	ItemKeys(group string) string
+	itemValues(group string) string
+	// appendEquals writes to q the condition that the attributes of one level hold the key
+	// and value of tav, and returns args extended with the values that the condition binds.
+	appendEquals(q *sqlBuilder, args []any, level expression.Level, tav typedAttributeValue) []any
 }
 
 type spanColumnKind int
@@ -97,24 +109,19 @@ func insertSpan(layout AttributeLayout) string {
 		"\n    )\nVALUES\n    (\n        ?" + strings.Repeat(separator+"?", len(names)-1) + "\n    )\n"
 }
 
-// selectSpans returns the statement that reads spans, up to and including its FROM clause.
-// An attribute group is read as its keys and its values in both layouts, so a span is
-// scanned the same way from either.
-func (l AttributeLayout) selectSpans() string {
+// selectSpans returns the statement that reads spans from a table of the given layout, up to
+// and including its FROM clause. Every layout yields a group as its keys and its values, so
+// a span is scanned the same way from any of them.
+func selectSpans(layout AttributeLayout) string {
 	var expressions []string
 	for _, column := range spanColumns() {
-		switch {
-		case column.kind == plainColumn:
+		switch column.kind {
+		case rowAttributes:
+			expressions = append(expressions, layout.Keys(column.name), layout.values(column.name))
+		case itemAttributes:
+			expressions = append(expressions, layout.ItemKeys(column.name), layout.itemValues(column.name))
+		default: // plainColumn
 			expressions = append(expressions, column.name)
-		case l != AttributeLayoutMap:
-			expressions = append(expressions, column.name+".key", column.name+".value")
-		case column.kind == rowAttributes:
-			expressions = append(expressions, "mapKeys("+column.name+")", "mapValues("+column.name+")")
-		default: // itemAttributes
-			expressions = append(expressions,
-				"arrayMap(m -> mapKeys(m), "+column.name+")",
-				"arrayMap(m -> mapValues(m), "+column.name+")",
-			)
 		}
 	}
 	return "\nSELECT\n    " + strings.Join(expressions, ",\n    ") + "\nFROM\n    spans s\n"
