@@ -4,6 +4,7 @@
 package tracestore
 
 import (
+	"fmt"
 	"strings"
 
 	expression "github.com/jaegertracing/jaeger-idl/query/expression/v1"
@@ -14,6 +15,17 @@ import (
 // str_attributes. Everything that depends on that choice is a method of the layout, so no
 // statement builder asks which layout it works with. NestedLayout and MapLayout implement it.
 type AttributeLayout interface {
+	// Name returns the value of the attribute_layout setting that selects the layout.
+	Name() string
+	// GroupType returns the type of a group that holds values of valueType, as CREATE TABLE
+	// declares it.
+	GroupType(valueType string) string
+	// Declares reports whether columnType, the type that system.columns lists for an
+	// attribute group, is a group of this layout.
+	Declares(columnType string) bool
+	// hoistedSource returns the expression for the value that a group of the span row holds
+	// under key, a quoted string literal, or NULL when the group has no such key.
+	hoistedSource(group string, key string) string
 	// insertColumns returns the columns that the insert statement names for a group of the
 	// span row.
 	insertColumns(group string) []string
@@ -125,4 +137,23 @@ func selectSpans(layout AttributeLayout) string {
 		}
 	}
 	return "\nSELECT\n    " + strings.Join(expressions, ",\n    ") + "\nFROM\n    spans s\n"
+}
+
+// attributeLayouts lists every layout.
+var attributeLayouts = []AttributeLayout{
+	NestedLayout{},
+	MapLayout{},
+}
+
+// AttributeLayoutByName returns the layout that the given value of the attribute_layout
+// setting selects.
+func AttributeLayoutByName(name string) (AttributeLayout, error) {
+	names := make([]string, 0, len(attributeLayouts))
+	for _, layout := range attributeLayouts {
+		if layout.Name() == name {
+			return layout, nil
+		}
+		names = append(names, layout.Name())
+	}
+	return nil, fmt.Errorf("attribute_layout must be %s, not %q", strings.Join(names, " or "), name)
 }
